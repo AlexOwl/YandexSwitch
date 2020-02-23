@@ -107,7 +107,7 @@ class YandexSwitchDevice(SwitchDevice):
 
     @property
     def current_power_w(self):
-        return self.device_state_attributes.get(ATTR_CURRENT_POWER_W)
+        return self.device_state_attributes.get(ATTR_CURRENT_POWER_W) if self.device_state_attributes is not None else None
 
     @property
     def today_energy_kwh(self):
