@@ -47,7 +47,8 @@ class TuyaClient:
                 await self.on_connected()
 
                 while True:
-                    data = await self.socket_reader.read(4096)
+                    # heartbeat request also gets response, so if there is no response for 30 sec, socket is disconnected
+                    data = await asyncio.wait_for(self.socket_reader.read(4096), TCP_TIMEOUT, loop=self._loop)
                     if not data:
                         raise Exception()
                     asyncio.create_task(self.proccess_data(data))
