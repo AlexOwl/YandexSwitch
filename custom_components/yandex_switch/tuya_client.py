@@ -1,6 +1,7 @@
 import tradetuya
 import socket
 import time
+import asyncio
 
 try:
     from . import helper
@@ -19,15 +20,7 @@ class TuyaClient:
         self.schema = schema
         self.switch_id = switch_id or helper.find_switch_dp(schema) or "1"
 
-        self.connection = None
         self.listeners = []
-        self.tasks = []
-
-        self._start_tasks()
-        
-    def _start_tasks(self):
-        for target in [self._daemon_heart_beat, self._daemon_receive_data]:
-            self.tasks.append(helper.create_task(target))
 
     @property
     def _device(self):
@@ -38,71 +31,67 @@ class TuyaClient:
             "protocol": "3.3"
         }
 
-    def connect(self):
-        self._fire_event({ "dps": helper.generate_get_control(self.schema) })
-        self._fire_event({ "dps": { self.switch_id: False } })
-        if self.connection:
+    async def run_forever(self, loop=None):
+        self._loop = loop
+
+        self.socket_lock = asyncio.Event(loop=self._loop)
+
+        asyncio.create_task(self.socket_establish_connection())
+        asyncio.create_task(self.socket_heart_beat())
+
+    async def socket_establish_connection(self):
+        while True:
+            print("reconnect")
             try:
-                self.connection.close()
+                self.socket_reader, self.socket_writer = await asyncio.wait_for(asyncio.open_connection(self.ip, TCP_PORT, loop=self._loop), TCP_TIMEOUT, loop=self._loop)
+                await self.on_connected()
+
+                while True:
+                    data = await self.socket_reader.read(4096)
+                    if not data:
+                        raise Exception()
+                    asyncio.create_task(self.proccess_data(data))
             except:
-                pass
-            self.connection = None
+                await self.on_disconnected()
+                await asyncio.sleep(10, loop=self._loop)
 
-        self.connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        # self.connection.settimeout(TCP_TIMEOUT)
+    async def on_connected(self): 
+        print("on connected")
+        self.socket_lock.set()
 
-        try:
-            self.connection.connect((self.ip, TCP_PORT))
-            self.get_control()
-        except:
-            time.sleep(3)
-            self.connect()
+        await self.send_control_request()
 
-    def _fire_event(self, reply):
-        data = helper.proccess_reply(reply)
+    async def on_disconnected(self):
+        print("on disconnect")
+        self.socket_lock.clear()
 
+        reply = { "dps": helper.generate_get_control(self.schema) }
+        #reply["dps"][self.switch_id] = False
+        await self.fire_event(reply)
+
+    async def fire_event(self, data):
         for listener in self.listeners:
-            listener(data)
+            asyncio.create_task(listener(data))
 
-    def _daemon_heart_beat(self):
+    async def proccess_data(self, data):
+        for reply_str in tradetuya._process_raw_reply(self._device, data):
+            await self.fire_event(helper.proccess_reply(reply_str))
+
+    async def socket_heart_beat(self):
         while True:
-            time.sleep(HEART_BEAT_PERIOD)
-            self.send_request(tradetuya.HEART_BEAT)
+            await asyncio.sleep(HEART_BEAT_PERIOD)
+            if self.socket_lock.is_set():
+                asyncio.create_task(self.send_request(tradetuya.HEART_BEAT))
 
-    def _daemon_receive_data(self):
-        while True:
-            data = None
-
-            try: 
-                data = self.connection.recv(4096)
-            except:
-                pass
-
-            if not data:
-                self.connect()
-                continue
-                
-            try:
-                for reply in tradetuya._process_raw_reply(self._device, data):
-                    self._fire_event(reply)
-            except:
-                pass
-
-    def set_control(self, data): 
-        data = helper.generate_set_control(self.schema, data)
-        print(data)
-        for request in helper.chunks_dict(data, 5):
-            self.send_request(tradetuya.CONTROL_NEW, request)
-
-    def get_control(self):
-        data = helper.generate_get_control(self.schema)
+    async def send_control_request(self, data = None):
+        data =  helper.generate_get_control(self.schema) if not data else helper.generate_set_control(self.schema, data)
         for request in helper.chunks_dict(data, 10):
-            self.send_request(tradetuya.CONTROL_NEW, request)
+            asyncio.create_task(self.send_request(tradetuya.CONTROL_NEW, request))
 
-    def send_request(self, command, payload = None):
-        try:
-            request = tradetuya._generate_payload(self._device, 0, command, payload)
-            self.connection.send(request)
-        except:
-            self.connect()
+    async def send_request(self, command, payload = None):
+        request = tradetuya._generate_payload(self._device, 0, command, payload)
+        await self.socket_write(request)
+
+    async def socket_write(self, message):
+        await self.socket_lock.wait()
+        self.socket_writer.write(message)

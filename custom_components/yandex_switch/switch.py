@@ -60,16 +60,20 @@ class YandexSwitchDevice(SwitchDevice):
         self._tuya_client = TuyaClient(host, deviceid, localkey, schema, switch_id)
         self._tuya_client.listeners.append(self._listener)
 
-        
-
-    def _listener(self, reply):
+    async def _listener(self, reply):
         if "dps" in reply:
             self._status.update(reply["dps"])
 
-        self.schedule_update_ha_state()
+        self.async_schedule_update_ha_state()
         
     async def async_added_to_hass(self):
-        await self.hass.async_add_executor_job(lambda: track_time_interval(self.hass, self.update, timedelta(seconds=self._scan_interval)))
+        asyncio.create_task(self._tuya_client.run_forever(loop=self.hass.loop))
+        asyncio.create_task(self._update_task())
+
+    async def _update_task(self):
+        while True:
+            asyncio.create_task(self.async_update())
+            await asyncio.sleep(self._scan_interval, loop=self.hass.loop)
 
     @property
     def name(self):
@@ -91,11 +95,11 @@ class YandexSwitchDevice(SwitchDevice):
     def icon(self):
         return self._icon
 
-    def turn_on(self, **kwargs):
-        self._tuya_client.set_control({ self._tuya_client.switch_id: True })
+    async def async_turn_on(self, **kwargs):
+        await self._tuya_client.send_control_request({ self._tuya_client.switch_id: True })
 
-    def turn_off(self, **kwargs):
-        self._tuya_client.set_control({ self._tuya_client.switch_id: False })
+    async def async_turn_off(self, **kwargs):
+        await self._tuya_client.send_control_request({ self._tuya_client.switch_id: False })
 
-    def update(self):
-        self._tuya_client.get_control()
+    async def async_update(self):
+        await self._tuya_client.send_control_request()

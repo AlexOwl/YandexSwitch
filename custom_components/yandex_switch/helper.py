@@ -20,7 +20,7 @@ def dps_to_value(schema, dps):
     def value_convert(dp, value):
         property = schema_dict[int(dp)]
         info = property.get("property", {})
-        if info.get("type") == "value":
+        if value is not None and info.get("type") == "value":
             value /= 10 ** info.get("scale", 0)
 
         return value
@@ -37,7 +37,7 @@ def generate_set_control(schema, data):
     return { str(dp): value for dp, value in data.items() if int(dp) in schema_dict and "w" in schema_dict[int(dp)].get("mode", "") }
 
 def generate_get_control(schema):
-    return { property["id"]: None for property in schema if "id" in property and "r" in property.get("mode", "") }
+    return { str(property["id"]): None for property in schema if "id" in property and "r" in property.get("mode", "") }
 
 def schema_to_dict(schema):
     return { property["id"]: property for property in schema if "id" in property }
