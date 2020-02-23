@@ -20,6 +20,8 @@ class TuyaClient:
         self.schema = schema
         self.switch_id = switch_id or helper.find_switch_dp(schema) or "1"
 
+        self.socket_connected = False
+
         self.listeners = []
 
     @property
@@ -34,14 +36,11 @@ class TuyaClient:
     async def run_forever(self, loop=None):
         self._loop = loop
 
-        self.socket_lock = asyncio.Event(loop=self._loop)
-
         asyncio.create_task(self.socket_establish_connection())
         asyncio.create_task(self.socket_heart_beat())
 
     async def socket_establish_connection(self):
         while True:
-            print("reconnect")
             try:
                 self.socket_reader, self.socket_writer = await asyncio.wait_for(asyncio.open_connection(self.ip, TCP_PORT, loop=self._loop), TCP_TIMEOUT, loop=self._loop)
                 await self.on_connected()
@@ -57,14 +56,12 @@ class TuyaClient:
                 await asyncio.sleep(10, loop=self._loop)
 
     async def on_connected(self): 
-        print("on connected")
-        self.socket_lock.set()
+        self.socket_connected = True
 
         await self.send_control_request()
 
     async def on_disconnected(self):
-        print("on disconnect")
-        self.socket_lock.clear()
+        self.socket_connected = False
 
         reply = { "dps": helper.generate_get_control(self.schema) }
         #reply["dps"][self.switch_id] = False
@@ -81,8 +78,7 @@ class TuyaClient:
     async def socket_heart_beat(self):
         while True:
             await asyncio.sleep(HEART_BEAT_PERIOD)
-            if self.socket_lock.is_set():
-                asyncio.create_task(self.send_request(tradetuya.HEART_BEAT))
+            asyncio.create_task(self.send_request(tradetuya.HEART_BEAT))
 
     async def send_control_request(self, data = None):
         data =  helper.generate_get_control(self.schema) if not data else helper.generate_set_control(self.schema, data)
@@ -94,5 +90,5 @@ class TuyaClient:
         await self.socket_write(request)
 
     async def socket_write(self, message):
-        await self.socket_lock.wait()
-        self.socket_writer.write(message)
+        if self.socket_connected:
+            self.socket_writer.write(message)
